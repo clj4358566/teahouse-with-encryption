@@ -37,13 +37,15 @@ import {
   type ProfilePayload,
   type ScanRangesPayload,
   type SharePayload,
-  type UpdateReqPayload
+  type UpdateReqPayload,
+  isEncPub
 } from '../../shared/protocol'
 import { isShareDenyReason } from '../../shared/protocol'
 import { isAvatarHash } from '../../shared/protocol'
 import { PEERS_PER_PACKET } from '../../shared/protocol'
 import { isPkGame, isPkRef } from '../../shared/pk'
 import { normalizeCidr } from './cidr'
+import { validateEncField, type EncDecryptor } from './e2e'
 
 // 信封编解码 + 入站校验（protocol §1/§4）：
 // 一切来自网络的报文按不可信输入处理 —— 字段白名单、类型、长度全检；
@@ -108,6 +110,7 @@ export function validateProfile(p: unknown): p is Profile {
   if (!isStrAllowEmpty(p.ver, LIMITS.ver)) return false
   if (!Array.isArray(p.caps) || p.caps.length > LIMITS.caps) return false
   if (!p.caps.every((c) => typeof c === 'string' && c.length <= LIMITS.capItem)) return false
+  if (p.encPub !== undefined && !isEncPub(p.encPub)) return false
   return true
 }
 
@@ -498,7 +501,7 @@ function isStrictBase64(value: string): boolean {
   return Buffer.from(value, 'base64').length === (value.length / 4) * 3 - padding
 }
 
-export function decode(buf: Buffer): DecodeResult {
+export function decode(buf: Buffer, decryptor?: EncDecryptor): DecodeResult {
   if (buf.length > UDP_MAX_INBOUND) return { ok: false, reason: 'oversize' }
 
   let raw: unknown
@@ -508,26 +511,47 @@ export function decode(buf: Buffer): DecodeResult {
     return { ok: false, reason: 'bad-json' }
   }
 
-  return decodeEnvelopeObject(raw)
+  return decodeEnvelopeObject(raw, TEXT_UDP_LIMIT, decryptor)
 }
 
-export function decodeEnvelopeObject(raw: unknown, textLimit = TEXT_UDP_LIMIT): DecodeResult {
+export function decodeEnvelopeObject(raw: unknown, textLimit = TEXT_UDP_LIMIT, decryptor?: EncDecryptor): DecodeResult {
   if (!isRecord(raw)) return { ok: false, reason: 'not-object' }
   if (raw.v !== PROTOCOL_VERSION) return { ok: false, reason: 'version' }
   if (!isStr(raw.type, LIMITS.type)) return { ok: false, reason: 'bad-type' }
   if (!isStr(raw.id, LIMITS.id)) return { ok: false, reason: 'bad-id' }
   if (!isStr(raw.from, LIMITS.from)) return { ok: false, reason: 'bad-from' }
   if (!isInt(raw.ts) || raw.ts <= 0) return { ok: false, reason: 'bad-ts' }
-  if (raw.payload === undefined) return { ok: false, reason: 'no-payload' }
+
+  let payload: unknown
+  if (raw.enc !== undefined) {
+    if (raw.payload !== undefined) return { ok: false, reason: 'bad-enc' }
+    if (!validateEncField(raw.enc)) return { ok: false, reason: 'bad-enc' }
+    if (!decryptor) return { ok: false, reason: 'bad-enc' }
+    const dec = decryptor(raw.enc, { id: raw.id, from: raw.from, type: raw.type, ts: raw.ts })
+    if (!dec.ok) return { ok: false, reason: 'bad-enc' }
+    payload = dec.payload
+  } else if (raw.payload === undefined) {
+    return { ok: false, reason: 'no-payload' }
+  } else {
+    payload = raw.payload
+  }
 
   const known = KNOWN_TYPES.has(raw.type)
-  if (known && !validatePayload(raw.type, raw.payload, textLimit)) {
+  if (known && !validatePayload(raw.type, payload, textLimit)) {
     return { ok: false, reason: `bad-payload:${raw.type}` }
   }
 
-  return { ok: true, env: raw as unknown as Envelope, known }
+  const env: Envelope = {
+    v: raw.v,
+    type: raw.type,
+    id: raw.id,
+    from: raw.from,
+    ts: raw.ts,
+    payload
+  }
+  return { ok: true, env, known }
 }
 
-export function decodeTcpEnvelopeObject(raw: unknown): DecodeResult {
-  return decodeEnvelopeObject(raw, TEXT_TCP_LIMIT)
+export function decodeTcpEnvelopeObject(raw: unknown, decryptor?: EncDecryptor): DecodeResult {
+  return decodeEnvelopeObject(raw, TEXT_TCP_LIMIT, decryptor)
 }

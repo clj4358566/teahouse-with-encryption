@@ -108,6 +108,7 @@ import {
   importScanRanges,
   saveProfile,
   saveProfileCaps,
+  bumpProfileRev,
   type AppState
 } from './store/app-state'
 import { refreshTrayLanguage, setupTray, stopTrayUnreadFlash, updateTrayUnread } from './windows/tray'
@@ -161,6 +162,7 @@ import { RangeSync } from './net/range-sync'
 import { Messenger } from './net/messenger'
 import { PeerClock } from './net/peer-clock'
 import { makeEnvelope } from './net/codec'
+import { loadEncIdentity, makeEnvelopeDecryptor, peerEncPub, type EncIdentity } from './net/e2e'
 import { ChatService } from './services/chat'
 import { ImageOcrResultCache } from './services/image-ocr-cache'
 import { ImagePreviewService } from './services/image-preview'
@@ -308,6 +310,7 @@ if (!gotLock) {
   let pruneTimer: ReturnType<typeof setInterval> | null = null
   let avatarPruneTimer: ReturnType<typeof setTimeout> | null = null
   let appState: AppState | null = null
+  let encIdentity: EncIdentity | null = null
   let rangeSync: RangeSync | null = null
   const remoteView = new RemoteViewWindows(() => mainWindow, () => {
     if (!appState || !remoteView.service) return
@@ -1163,7 +1166,11 @@ if (!gotLock) {
         return { host, port: Number(port) || udpPort }
       })
     ]
-    const udp = new UdpChannel({ port: udpPort, ...(process.env['PANTRY_SMOKE'] ? { bindAddress: '127.0.0.1', broadcastTargets: [] } : {}) })
+    const udp = new UdpChannel({
+      port: udpPort,
+      ...(process.env['PANTRY_SMOKE'] ? { bindAddress: '127.0.0.1', broadcastTargets: [] } : {}),
+      ...(encIdentity ? { decrypt: makeEnvelopeDecryptor(encIdentity) } : {})
+    })
     registry = new PeerRegistry(state.nodeId)
     // 时钟偏移矫正（决议 #65）：发现层观测各节点时钟差，chat/groups 显示时矫正到本机钟
     const peerClock = new PeerClock()
@@ -1204,7 +1211,8 @@ if (!gotLock) {
         registry,
         selfId: state.nodeId,
         queue: new QueueRepo(db),
-        dedup: new DedupRepo(db)
+        dedup: new DedupRepo(db),
+        ...(encIdentity ? { e2e: encIdentity } : {})
       })
       messenger.on('incoming', (env: Envelope, source?: { address: string }) => {
         if (env.type === MSG_TYPES.update) handleUpdateRequest(env as Envelope<UpdateReqPayload>)
@@ -1222,6 +1230,12 @@ if (!gotLock) {
           const env = makeEnvelope(MSG_TYPES.screen, state.nodeId, payload)
           if (bestEffort) { messenger!.sendBestEffort(id, env); return Promise.resolve(true) }
           return messenger!.sendReliable(id, env, signal)
+        },
+        tcpE2e: (peerId) => {
+          if (!encIdentity) return undefined
+          const pub = peerEncPub(registry?.get(peerId)?.profile)
+          if (!pub) return undefined
+          return { identity: encIdentity, peerId, peerPub: pub }
         }
       })
       const chatMessages = new MsgRepo(db)
@@ -1275,6 +1289,11 @@ if (!gotLock) {
       chat.on('nudge', onNudge)
       chat.on('convs', onConvs)
       onConvs(chat.listConversations())
+      registry.on('enc-key-changed', (nodeId: string) => {
+        const name = resolvePeerDisplayName(nodeId) || registry?.get(nodeId)?.profile.nick || nodeId
+        console.warn(`[e2e] 对端 ${nodeId}（${name}）加密公钥已变更`)
+        chat?.noteEncKeyChanged(nodeId, name)
+      })
 
       files = new FilesService({
         diagnostic: diagnostics.record,
@@ -1304,7 +1323,8 @@ if (!gotLock) {
           return dir
         },
         allowDirectFileSend: () => appState?.config.allowDirectFileSend !== false,
-        peerDisplayName: resolvePeerDisplayName
+        peerDisplayName: resolvePeerDisplayName,
+        ...(encIdentity ? { e2e: encIdentity } : {})
       })
       files.on('message', onMessage)
       files.on('status', onStatus)
@@ -3090,8 +3110,13 @@ if (!gotLock) {
       CAPS.groupRoles,
       CAPS.avatarImages,
       CAPS.fileCabinet,
+      CAPS.e2e,
       ...updateCaps
     ], app.getPreferredSystemLanguages()[0] || app.getLocale())
+    const encLoaded = loadEncIdentity(app.getPath('userData'), appState.nodeId)
+    encIdentity = encLoaded.identity
+    appState.profile.encPub = encLoaded.identity.publicB64
+    if (encLoaded.created) bumpProfileRev(appState)
     await setLanguage(appState.config.language)
     udpPort = envUdpPort ?? appState.config.udpPort
     tcpPort = envTcpPort ?? appState.config.tcpPort

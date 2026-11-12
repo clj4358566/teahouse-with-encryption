@@ -15,7 +15,7 @@
 2. Keep the Teahouse main protocol as bounded UTF-8 JSON. GBK/SJIS and IP Messenger text frames belong only in a separately enabled compatibility adapter.
 3. Tolerate packet loss, duplication, reordering, peer restarts, and peers disappearing at any moment.
 4. Carry a protocol version and ignore unknown message types or fields for forward compatibility.
-5. Apply the trusted-LAN plaintext model while validating every inbound packet as untrusted data.
+5. Keep decision #5 as the historical baseline (encryption is not mandatory). Peers that advertise `enc1` may encrypt user content per peer; see the envelope section. Every inbound packet is still validated as untrusted data.
 6. Support IPv4 in v1. IPv6 remains future work.
 
 ## 2. Transport overview
@@ -48,7 +48,8 @@ Profiles carried by `entry`, `alive`, and `profile` include:
   "host": "alex-pc",
   "platform": "win",
   "tcpPort": 17879,
-  "caps": ["grp1", "img1", "shr1"]
+  "caps": ["grp1", "img1", "shr1", "enc1"],
+  "encPub": "…" // optional 32-byte X25519 public key, standard base64, only with enc1
 }
 ```
 
@@ -68,8 +69,9 @@ Known capability tokens:
 | `ta1` | Receiver delivery/failure results via reliable `file-ctl` (`CAPS.transferAck`, issue #48) |
 | `shr1` | Shared file-cabinet control and transfer purposes |
 | `upd1` | This installed instance can provide a matching local update package |
+| `enc1` | Optional per-peer encryption of user content and TCP byte streams |
 
-Unknown tokens are ignored. `shr1` describes protocol support and does not grant access; the sharing peer evaluates its local permissions for every operation.
+Unknown tokens are ignored. `shr1` describes protocol support and does not grant access; the sharing peer evaluates its local permissions for every operation. `enc1` is additive on top of decision #5: discovery, heartbeat, profile, ACK and gossip stay plaintext so mixed-version LANs can still find each other. When both peers advertise `enc1` and a usable `encPub` is known, `msg`, `file-ctl`, `group`, `avatar`, `share` and `screen` envelopes replace plaintext `payload` with `enc: { v:1, eph, n, ct }` (ephemeral-static X25519, HKDF-SHA256, AES-256-GCM; AAD binds id/from/type/ts and the recipient nodeId). Decrypt failures are dropped as `bad-enc`. A message that fits UDP in plaintext but not after encryption uses the existing TCP control fallback. TCP file bytes and screen JPEGs get a 1-RTT `enc-hello`/`enc-ok` handshake and a length-prefixed AES-256-GCM record layer when both sides support `enc1`; legacy peers keep plaintext TCP. Each node persists a long-term X25519 key pair in userData (`enc-identity.json`, mode 0600) bound to `nodeId`. Peer public keys are stored TOFU in `peers.enc_pub`; a change updates the stored key and shows a visible local warning, then communication continues. Local chat history remains plaintext. Envelope version stays `v:1`.
 
 ## 4. Envelope and compatibility
 
@@ -430,3 +432,7 @@ Preserves nameGXF's mention keyboard navigation, remark/nickname filtering, comm
 Any current group member may mention everyone. Delivery remains per-member unicast excluding the sender; former members cannot send. The reserved mentions value `"@all"` marks the conversation and emphasizes notification titles while preserving mute, notification and focused-window gates. Older clients, including v0.60.3, receive the text without everyone emphasis. No new field, capability, database schema, dependency or external request. Editing the label into a different token removes the outgoing broadcast marker.
 
 Official repository, download, issue and source links remain skyjt/teahouse; fork migration is excluded. This feature increments v0.60.3 to v0.61.0. The original PR's #308–#310 conflict with upstream decision numbers, so this integration uses #318. Twemoji SVGs are packaged as separate local assets loaded on demand, reducing inline graphics parsed by each window without raising JS/CSS budgets or changing Electron 22 / Chrome 108.
+
+### Optional per-peer encryption (enc1, 2026-11-12)
+
+Adds optional `Profile.encPub` and capability `enc1` without bumping envelope `v`. Mixed-version networks remain discoverable because discovery stays plaintext. Both new peers encrypt user-content envelopes and, on TCP, the subsequent frame/file/JPEG byte stream. SQLite schema moves to v17 (`peers.enc_pub`). Application version is **0.65-encryption** (`package.json` uses the valid semver `0.65.0-encryption`; profile `ver` and install-package file names use `0.65-encryption`).

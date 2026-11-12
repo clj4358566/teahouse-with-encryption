@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { basename, extname, join } from 'node:path'
 import type { DataExportOptions, DataImportResult, ExportFormat } from '../../shared/ipc'
-import { GROUP_MAX_MEMBERS, LIMITS, isAvatarHash } from '../../shared/protocol'
+import { GROUP_MAX_MEMBERS, LIMITS, isAvatarHash, isEncPub } from '../../shared/protocol'
 import { parseScreenRecord } from '../../shared/remote-view'
 import { parsePkRef, pkLabel } from '../../shared/pk'
 import { toFtsTokens } from '../store/fts'
@@ -55,6 +55,7 @@ interface PeerDump {
   ver: string
   firstSeen: number
   lastSeen: number
+  encPub?: string
 }
 
 interface Manifest {
@@ -289,7 +290,8 @@ export class PorterService {
         `SELECT node_id AS nodeId, nick, COALESCE(remark, '') AS remark, company, dept, team,
                 avatar, avatar_hash AS avatarHash, host, platform, ip,
                 udp_port AS udpPort, tcp_port AS tcpPort,
-                profile_rev AS profileRev, caps, ver, first_seen AS firstSeen, last_seen AS lastSeen
+                profile_rev AS profileRev, caps, ver, first_seen AS firstSeen, last_seen AS lastSeen,
+                enc_pub AS encPub
          FROM peers ORDER BY last_seen ASC`
       )
       .all() as PeerDump[]
@@ -378,9 +380,9 @@ export class PorterService {
       peerUpsert: this.db.prepare(
         `INSERT INTO peers
          (node_id, nick, remark, company, dept, team, avatar, avatar_hash, host, platform, ip,
-          udp_port, tcp_port, profile_rev, caps, ver, first_seen, last_seen)
+          udp_port, tcp_port, profile_rev, caps, ver, first_seen, last_seen, enc_pub)
          VALUES (@nodeId, @nick, @remark, @company, @dept, @team, @avatar, @avatarHash, @host, @platform, @ip,
-                 @udpPort, @tcpPort, @profileRev, @caps, @ver, @firstSeen, @lastSeen)
+                 @udpPort, @tcpPort, @profileRev, @caps, @ver, @firstSeen, @lastSeen, @encPub)
          ON CONFLICT(node_id) DO UPDATE SET
            nick = CASE WHEN excluded.last_seen >= peers.last_seen THEN excluded.nick ELSE peers.nick END,
            company = CASE WHEN excluded.last_seen >= peers.last_seen THEN excluded.company ELSE peers.company END,
@@ -396,6 +398,7 @@ export class PorterService {
            profile_rev = CASE WHEN excluded.last_seen >= peers.last_seen THEN excluded.profile_rev ELSE peers.profile_rev END,
            caps = CASE WHEN excluded.last_seen >= peers.last_seen THEN excluded.caps ELSE peers.caps END,
            ver = CASE WHEN excluded.last_seen >= peers.last_seen THEN excluded.ver ELSE peers.ver END,
+           enc_pub = CASE WHEN excluded.last_seen >= peers.last_seen THEN excluded.enc_pub ELSE peers.enc_pub END,
            first_seen = MIN(peers.first_seen, excluded.first_seen),
            last_seen = MAX(peers.last_seen, excluded.last_seen)`
       ),
@@ -480,7 +483,8 @@ export class PorterService {
     if (!peer.nodeId || peer.nodeId === this.selfId) return
     statements.peerUpsert.run({
       ...peer,
-      avatarHash: isAvatarHash(peer.avatarHash) ? peer.avatarHash : ''
+      avatarHash: isAvatarHash(peer.avatarHash) ? peer.avatarHash : '',
+      encPub: isEncPub(peer.encPub) ? peer.encPub : ''
     })
   }
 

@@ -25,6 +25,7 @@ interface PeerRow {
   ver: string
   first_seen: number
   last_seen: number
+  enc_pub: string
 }
 
 function toPlatform(value: string): Platform {
@@ -42,10 +43,10 @@ export class PeersRepo {
     this.upsertStmt = db.prepare(`
       INSERT INTO peers (
         node_id, nick, company, dept, team, avatar, avatar_hash, host, platform,
-        ip, udp_port, tcp_port, profile_rev, caps, ver, first_seen, last_seen
+        ip, udp_port, tcp_port, profile_rev, caps, ver, first_seen, last_seen, enc_pub
       ) VALUES (
         @nodeId, @nick, @company, @dept, @team, @avatar, @avatarHash, @host, @platform,
-        @ip, @udpPort, @tcpPort, @profileRev, @caps, @ver, @now, @lastSeen
+        @ip, @udpPort, @tcpPort, @profileRev, @caps, @ver, @now, @lastSeen, @encPub
       )
       ON CONFLICT(node_id) DO UPDATE SET
         nick = excluded.nick, company = excluded.company, dept = excluded.dept,
@@ -53,7 +54,8 @@ export class PeersRepo {
         host = excluded.host,
         platform = excluded.platform, ip = excluded.ip, udp_port = excluded.udp_port,
         tcp_port = excluded.tcp_port, profile_rev = excluded.profile_rev,
-        caps = excluded.caps, ver = excluded.ver, last_seen = excluded.last_seen
+        caps = excluded.caps, ver = excluded.ver, last_seen = excluded.last_seen,
+        enc_pub = excluded.enc_pub
     `) // remark 与 first_seen 不被覆盖：备注是本地资产，首次见面时间只写一次
 
     this.selectAllStmt = db.prepare('SELECT * FROM peers ORDER BY last_seen DESC')
@@ -91,7 +93,8 @@ export class PeersRepo {
       caps: JSON.stringify(p.caps),
       ver: p.ver,
       now: Date.now(),
-      lastSeen: record.lastSeen
+      lastSeen: record.lastSeen,
+      encPub: p.encPub ?? ''
     })
   }
 
@@ -132,7 +135,8 @@ export class PeersRepo {
         platform: toPlatform(row.platform),
         tcpPort: row.tcp_port,
         ver: row.ver,
-        caps
+        caps,
+        encPub: row.enc_pub || undefined
       }
       return {
         profile,

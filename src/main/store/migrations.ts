@@ -205,6 +205,11 @@ export const MIGRATIONS: ReadonlyArray<string> = [
   `
   ALTER TABLE groups ADD COLUMN description TEXT NOT NULL DEFAULT '';
   ALTER TABLE groups ADD COLUMN announce TEXT NOT NULL DEFAULT '';
+  `,
+
+  // v17：按对端加密的 TOFU 公钥（enc1）
+  `
+  ALTER TABLE peers ADD COLUMN enc_pub TEXT NOT NULL DEFAULT '';
   `
 ]
 

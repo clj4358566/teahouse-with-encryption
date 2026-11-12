@@ -12,6 +12,7 @@ import {
   isAvatarHash,
   isAvatarPresetValue,
   isShareMode,
+  toProtocolAppVersion,
   type Platform,
   type Profile,
   type ShareMode
@@ -180,6 +181,11 @@ export function saveProfileCaps(state: AppState, caps: string[]): boolean {
   saveProfileRevision(state, true)
   state.profile.caps = [...caps]
   return true
+}
+
+/** 首次启用加密身份等需要全网刷新资料的本地变更。 */
+export function bumpProfileRev(state: AppState): void {
+  saveProfileRevision(state, true)
 }
 
 /**
@@ -509,7 +515,7 @@ export function loadAppState(
     host: hostname(),
     platform: detectPlatform(),
     tcpPort,
-    ver: appVersion,
+    ver: toProtocolAppVersion(appVersion),
     caps
   }
 

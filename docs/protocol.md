@@ -14,7 +14,7 @@
 2. **主协议报文自有**：茶话间节点之间只使用 UTF-8 JSON，主协议不引入 GBK/SJIS，也不把 IPMSG 文本报文混入 `UdpChannel` / `codec`；内网通兼容模式由独立适配器处理，见 [nwt-compat-design.md](nwt-compat-design.md)。
 3. **对等无服务器**：任何节点崩溃/离线不影响其余节点；协议必须容忍丢包、乱序、重复、节点随时消失。
 4. **可演进**：信封带版本号；收到未知 `type` 或未知字段一律忽略不报错（向前兼容的基础）。
-5. **内网信任模型**：不加密、不签名（决议 #5），但**所有入站报文按不可信输入做校验**（长度、类型、字段白名单）。
+5. **内网信任模型**：决议 #5 仍是历史基线（主协议不强制加密/签名）；支持 `enc1` 的节点可对用户内容做按对端加密，见 §4.1。**所有入站报文仍按不可信输入做校验**（长度、类型、字段白名单）。
 6. v1 仅 IPv4，IPv6 远期（决议 #3）。
 
 ## 2. 传输层总览
@@ -47,11 +47,12 @@
   "host":    "zhangsan-PC",
   "platform":"win|mac|linux",
   "tcpPort": 17879,
-  "caps":    ["grp1","img1"]    // 能力声明，供未来扩展探测
+  "caps":    ["grp1","img1","enc1"], // 能力声明，供未来扩展探测
+  "encPub":  "…"              // 可选：32 字节 X25519 公钥（标准 base64），仅声明 enc1 时携带
 }
 ```
 
-**caps 能力位**（短串，入站按 `LIMITS.capItem` 截断、未知位忽略）：`grp1` 群聊、`img1` 图片消息、**`av1` 自定义头像**（决议 #243，理解资料/群元数据头像哈希与 `avatar` 按需取图）、**`mrec1` 媒体撤回**（决议 #188，支持 `file-ctl offer.msgId` 与图片 / 未完成文件撤回）、**`tbl1` 表格图片文字视图**（决议 #190，支持 `file-ctl offer.tableText/tableTextTruncated`，图片气泡可在图片 / 原始 TSV 文本间切换）、**`fd1` 私聊文件直接发送**（决议 #174，支持接收 `file-ctl {op:"direct"}` 并按本地策略自动 accept）、**`tw1` 传输排队与可恢复取消**（决议 #211，支持接收 TCP `wait` 帧；作为发送方时收到对端 cancel 后保留供流授权，允许接收方此后凭原 transferId 断点重拉）、**`shr1` 共享文件柜**（决议 #271/#275，支持 `share` 报文的 `list/list-ok/get/deny` 与 `file-ctl offer.purpose:"share-get"|"share-put"`）——只声明能力，**不代表已开共享**：是否可见、可下载、可上传一律由共享方本机按"默认档 + 按人例外"当场判定，未声明者按未知类型忽略 `share` 报文，新端对其灰显文件柜入口并拒收其 `purpose:"share-*"` offer、**`upd1` 可作为本平台更新源**（决议 #166/#170/#181）——声明者运行于可分发形态（Windows nsis 安装版可自留安装器、Linux deb 可经 `dpkg-deb` 自重打包），且本机已有可提供的本平台安装包，能向同平台、同架构、版本更低的节点提供安装包；形态不可分发 / 尚未备妥包时不声明。绿色版（portable / AppImage）机制上同样适用，本期实现聚焦 nsis / deb。
+**caps 能力位**（短串，入站按 `LIMITS.capItem` 截断、未知位忽略）：`grp1` 群聊、`img1` 图片消息、**`av1` 自定义头像**（决议 #243，理解资料/群元数据头像哈希与 `avatar` 按需取图）、**`mrec1` 媒体撤回**（决议 #188，支持 `file-ctl offer.msgId` 与图片 / 未完成文件撤回）、**`tbl1` 表格图片文字视图**（决议 #190，支持 `file-ctl offer.tableText/tableTextTruncated`，图片气泡可在图片 / 原始 TSV 文本间切换）、**`fd1` 私聊文件直接发送**（决议 #174，支持接收 `file-ctl {op:"direct"}` 并按本地策略自动 accept）、**`tw1` 传输排队与可恢复取消**（决议 #211，支持接收 TCP `wait` 帧；作为发送方时收到对端 cancel 后保留供流授权，允许接收方此后凭原 transferId 断点重拉）、**`shr1` 共享文件柜**（决议 #271/#275，支持 `share` 报文的 `list/list-ok/get/deny` 与 `file-ctl offer.purpose:"share-get"|"share-put"`）——只声明能力，**不代表已开共享**：是否可见、可下载、可上传一律由共享方本机按"默认档 + 按人例外"当场判定，未声明者按未知类型忽略 `share` 报文，新端对其灰显文件柜入口并拒收其 `purpose:"share-*"` offer、**`upd1` 可作为本平台更新源**（决议 #166/#170/#181）——声明者运行于可分发形态（Windows nsis 安装版可自留安装器、Linux deb 可经 `dpkg-deb` 自重打包），且本机已有可提供的本平台安装包，能向同平台、同架构、版本更低的节点提供安装包；形态不可分发 / 尚未备妥包时不声明。绿色版（portable / AppImage）机制上同样适用，本期实现聚焦 nsis / deb。**`enc1` 按对端加密**：声明者携带可选 `encPub`（长期 X25519 公钥），并对 `msg` / `file-ctl` / `group` / `avatar` / `share` / `screen` 等用户内容与控制信封使用临时-静态 X25519 + HKDF-SHA256 + AES-256-GCM；发现、心跳、资料、ACK 与 gossip 仍明文，以便混用旧端。详见 §4.1。未声明者按未知能力忽略 `enc` 字段，新端对其回退明文。
 
 ## 4. 报文信封（UDP 与 TCP 控制帧通用）
 
@@ -67,6 +68,20 @@
 ```
 
 兼容规则：`v` 相同主版本必须互通；未知 `type`/未知字段忽略；缺必填字段的报文丢弃并计数（不回错误，防放大）。
+
+### 4.1 可选按对端加密（`enc1`）
+
+这是叠加在决议 #5 之上的可选能力，**不提升信封版本 `v`**。双方都声明 `enc1` 且已获知对端 `encPub` 时启用；任一方缺失则该方向仍走既有明文，保证与旧版混用可发现、可通信。
+
+- 身份：每个节点在 userData 下持久化长期 X25519 密钥对（`enc-identity.json`，权限 0600），绑定本机 `nodeId`；`nodeId` 变化则重新生成。公钥以标准 base64 放在 `Profile.encPub`，并声明 `caps` 含 `enc1`。
+- 信封：保留明文 `v` / `type` / `id` / `from` / `ts`（供 ACK、路由、去重）。**线路上不再携带明文 `payload`**，改放 `enc: { v:1, eph, n, ct }`（均为标准 base64）。接收端先解密再走既有 `validatePayload`；解密失败记为 `bad-enc` 并丢弃。`enc` 与明文 `payload` 不得同时出现。
+- 算法：发送方生成临时 X25519，ECDH(临时私钥, 对端长期公钥)，HKDF-SHA256（info 绑定双方 nodeId，如 `teahouse-enc1-v1`），AES-256-GCM。AAD 覆盖 `id`、`from`、`type`、`ts` 与收件人 nodeId。
+- TOFU：把对端 `encPub` 记入本地 `peers.enc_pub`。若已记录的公钥发生变化，更新存储并在该私聊中给出可见提示，仍允许继续通信。
+- 覆盖类型：`msg`、`file-ctl`、`group`、`avatar`、`share`、`screen`（含经 TCP 控制帧发送的同一信封）。`entry` / `alive` / `exit` / `presence` / `profile` / `peers` / `scan-ranges` / `ack` 保持明文。
+- UDP 1200 字节上限：加密有额外开销（约 160+ 字节）。若明文能装入 UDP、密文不能，则走既有 TCP 控制帧兜底，不得丢弃。
+- TCP 数据面：双方均支持 `enc1` 时，连接开始先做 1-RTT 握手（`enc-hello` / `enc-ok`，双方临时 X25519，并用长期密钥认证），随后用长度前缀 AES-256-GCM 记录封装后续控制帧以及文件/屏幕 JPEG 裸字节。旧端或不具备公钥时保持现有明文 TCP。
+
+本地聊天记录库仍为明文；发现层仍会暴露在线状态与昵称。
 
 ## 5. 报文类型一览
 
@@ -603,3 +618,5 @@ screen-next(seq=2) ────────────→ 再采样；始终最
 任何群成员可使用全员提及；发送仍按群成员逐个单播、排除自己，退群后不能发送。线上 mentions 中使用保留值 `"@all"`，接收端设置“有人@我”并加强通知标题，仍遵守静音、通知开关和聚焦不打扰。旧版（包括 v0.60.3）正常接收正文但不会加强全员提醒。不新增字段、能力位、库表、依赖或外网请求。编辑全员标签使其不再是完整 token 后，发送不携带广播标记。
 
 上游仓库及下载、反馈、源码链接保持 skyjt/teahouse；不采用 fork 迁移。版本按功能增量从 v0.60.3 升到 v0.61.0。原 PR 的 #308–#310 在主线已用于其他功能，本次统一记作 #318。Twemoji SVG 改为独立本地文件按需读取，减少各窗口解析的内联图形数据；保持原有 JS/CSS 预算及 Electron 22 / Chrome 108 基线。
+
+- 2026-11-12：可选按对端加密 `enc1`。`Profile` 增加可选 `encPub`，caps 增加 `enc1`；用户内容信封可携带 `enc` 字段（临时-静态 X25519 + AES-256-GCM），发现/心跳/资料/ACK 仍明文。双方均支持时 TCP 连接先握手再加密记录层，覆盖文件字节与屏幕 JPEG。与旧端混用时回退明文。信封版本仍为 `v:1`，SQLite 升 v17（`peers.enc_pub`），应用版本为 **0.65-encryption**（package.json 为合法 semver `0.65.0-encryption`，资料报文与安装包文件名使用 `0.65-encryption`）。

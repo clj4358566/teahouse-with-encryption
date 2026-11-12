@@ -13,6 +13,14 @@ import { decodeTcpEnvelopeObject, encode, makeEnvelope } from './codec'
 import { encodeFrame, FrameReader } from './frame'
 import type { UdpChannel } from './udp'
 import type { PeerRegistry } from './peer-registry'
+import {
+  feedTcpPlain,
+  makeEnvelopeDecryptor,
+  peerEncPub,
+  sealIfNeeded,
+  startTcpClientEncryption,
+  type EncIdentity
+} from './e2e'
 
 // 可靠消息通道（protocol §7.2）：msg + ack、退避重传、离线补发、持久化去重。
 // 存储经接口注入：生产用 SQLite repo，测试用内存实现 —— 本模块保持零 Electron / 零 native 依赖。
@@ -48,6 +56,7 @@ export class Messenger extends EventEmitter {
   private readonly queue: QueueStore
   private readonly dedup: DedupStore
   private readonly t: Timings
+  private readonly e2e?: EncIdentity
   private readonly pending = new Map<string, PendingEntry>()
   private readonly flushing = new Set<string>()
   private readonly cancelledQueued = new Set<string>()
@@ -59,6 +68,7 @@ export class Messenger extends EventEmitter {
     queue: QueueStore
     dedup: DedupStore
     timings?: Partial<Timings>
+    e2e?: EncIdentity
   }) {
     super()
     this.udp = opts.udp
@@ -67,6 +77,7 @@ export class Messenger extends EventEmitter {
     this.queue = opts.queue
     this.dedup = opts.dedup
     this.t = { ...TIMINGS, ...opts.timings }
+    this.e2e = opts.e2e
 
     this.udp.on('envelope', (env: Envelope, known: boolean, rinfo: RemoteInfo) => {
       if (known) this.handle(env, rinfo)
@@ -104,7 +115,7 @@ export class Messenger extends EventEmitter {
   sendBestEffort(peerId: string, env: Envelope): void {
     const record = this.registry.get(peerId)
     if (!record) return
-    const buf = encode(env)
+    const buf = this.outboundBuffer(peerId, env)
     if (buf.length > UDP_MAX_PAYLOAD) return
     this.udp.sendBuffer(buf, record.ip, record.udpPort)
   }
@@ -177,7 +188,7 @@ export class Messenger extends EventEmitter {
    *  等待表按 (收件人, 信封 id) 复合键——群消息同一信封并发发往多个成员互不串线（§7.4） */
   private sendAwaitAck(peerId: string, env: Envelope, signal?: AbortSignal): Promise<boolean> {
     if (signal?.aborted) return Promise.resolve(false)
-    const buf = encode(env)
+    const buf = this.outboundBuffer(peerId, env)
     if (buf.length > UDP_MAX_PAYLOAD) {
       return this.sendTcpAwaitAck(peerId, env, signal)
     }
@@ -226,6 +237,7 @@ export class Messenger extends EventEmitter {
     if (signal?.aborted) return Promise.resolve(false)
     const record = this.registry.get(peerId)
     if (!record) return Promise.resolve(false)
+    const sealed = this.sealEnvelope(peerId, env)
     return new Promise((resolve) => {
       let settled = false
       const socket = createConnection({ host: record.ip, port: record.profile.tcpPort })
@@ -250,17 +262,51 @@ export class Messenger extends EventEmitter {
           if (frame.type === 'err') settle(false)
         },
         () => undefined,
-        () => settle(false)
+        () => settle(false),
+        this.decryptor()
       )
 
       socket.setNoDelay(true)
+      const attachData = (): void => {
+        socket.on('data', (chunk) => {
+          try {
+            for (const plain of feedTcpPlain(socket, chunk)) reader.feed(plain)
+          } catch {
+            settle(false)
+          }
+        })
+      }
       socket.on('connect', () => {
-        socket.write(encodeFrame({ type: 'msg', envelope: env }))
+        const pub = this.e2e ? peerEncPub(record.profile) : null
+        if (this.e2e && pub) {
+          startTcpClientEncryption(socket, { identity: this.e2e, peerId, peerPub: pub })
+            .then(() => {
+              if (settled) return
+              attachData()
+              socket.write(encodeFrame({ type: 'msg', envelope: sealed }))
+            })
+            .catch(() => settle(false))
+          return
+        }
+        attachData()
+        socket.write(encodeFrame({ type: 'msg', envelope: sealed }))
       })
-      socket.on('data', (chunk) => reader.feed(chunk))
       socket.on('error', () => settle(false))
       socket.on('close', () => settle(false))
     })
+  }
+
+  private outboundBuffer(peerId: string, env: Envelope): Buffer {
+    return encode(this.sealEnvelope(peerId, env))
+  }
+
+  private sealEnvelope(peerId: string, env: Envelope): Envelope {
+    if (!this.e2e) return env
+    return sealIfNeeded(env, peerId, this.registry.get(peerId)?.profile, this.e2e)
+  }
+
+  private decryptor() {
+    return this.e2e ? makeEnvelopeDecryptor(this.e2e) : undefined
   }
 
   private queueKey(peerId: string, msgId: string): string {

@@ -31,6 +31,7 @@ import type { FileRefView, MessageView, MsgStatusEvent, TableTextMeta, TransferV
 import { makeEnvelope } from '../net/codec'
 import type { Messenger } from '../net/messenger'
 import type { PeerRegistry } from '../net/peer-registry'
+import { peerEncPub, type EncIdentity, type TcpE2eContext } from '../net/e2e'
 import {
   TransferServer,
   dedupeTargetPath,
@@ -167,6 +168,7 @@ export interface FilesDeps {
   /** 展示名：用于默认接收子目录（备注优先可由 main 注入）。 */
   peerDisplayName?: (peerId: string) => string
   bindAddress?: string
+  e2e?: EncIdentity
 }
 
 export class FilesService extends EventEmitter {
@@ -192,7 +194,8 @@ export class FilesService extends EventEmitter {
         },
         receiveMessage: (env, ip) => this.deps.messenger.acceptTcpEnvelope(env, ip),
         openScreen: deps.openScreen,
-        supportsWait: (peerId) => this.peerSupportsTransferWait(peerId)
+        supportsWait: (peerId) => this.peerSupportsTransferWait(peerId),
+        e2e: this.tcpE2eContext()
       },
       deps.bindAddress
     )
@@ -792,6 +795,7 @@ export class FilesService extends EventEmitter {
       host: peer.ip,
       port: peer.profile.tcpPort,
       selfId: this.deps.selfId,
+      e2e: this.tcpE2eForPeer(inc.peerId),
       transferId,
       files: plans,
       saveDir: base,
@@ -1843,6 +1847,25 @@ export class FilesService extends EventEmitter {
   private peerSupportsTransferWait(peerId: string): boolean {
     const caps = this.deps.registry.get(peerId)?.profile.caps
     return Array.isArray(caps) && caps.includes(CAPS.transferWait)
+  }
+
+  private tcpE2eContext(): TcpE2eContext | undefined {
+    if (!this.deps.e2e) return undefined
+    return {
+      identity: this.deps.e2e,
+      lookupPeer: (nodeId) => {
+        const rec = this.deps.registry.get(nodeId)
+        if (!rec) return undefined
+        return { encPub: rec.profile.encPub, caps: rec.profile.caps }
+      }
+    }
+  }
+
+  private tcpE2eForPeer(peerId: string): { identity: EncIdentity; peerId: string; peerPub: Buffer } | undefined {
+    if (!this.deps.e2e) return undefined
+    const pub = peerEncPub(this.deps.registry.get(peerId)?.profile)
+    if (!pub) return undefined
+    return { identity: this.deps.e2e, peerId, peerPub: pub }
   }
 
   private defaultReceiveDir(peerId: string): string {

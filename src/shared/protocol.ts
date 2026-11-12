@@ -123,11 +123,23 @@ export const LIMITS = {
   groupAdminHash: 64,
   avatarHash: 64,
   groupDescription: 200,
-  groupAnnounce: 1024
+  groupAnnounce: 1024,
+  /** 32 字节 X25519 公钥的标准 base64（含填充，固定 44 字符） */
+  encPub: 44
 }
 
 export type Platform = 'win' | 'mac' | 'linux'
 export type RuntimeArch = 'x64' | 'ia32' | 'arm64'
+
+/** 资料报文与安装包文件名中的应用版本（≤ LIMITS.ver，便于旧端校验）。
+ * package.json 因 electron-builder 需要合法 semver，使用 0.65.0-encryption。 */
+export const PROTOCOL_APP_VERSION = '0.65-encryption'
+export const PACKAGE_APP_VERSION = '0.65.0-encryption'
+
+/** 把 Electron/package 版本映射为协议资料里的短版本。 */
+export function toProtocolAppVersion(appVersion: string): string {
+  return appVersion === PACKAGE_APP_VERSION ? PROTOCOL_APP_VERSION : appVersion
+}
 
 /** 节点资料（protocol §3），随 entry / alive / profile 报文携带 */
 export interface Profile {
@@ -149,6 +161,8 @@ export interface Profile {
   ver: string
   /** 能力声明，供未来扩展探测 */
   caps: string[]
+  /** 长期 X25519 公钥（标准 base64，32 字节）；仅声明 enc1 的节点携带 */
+  encPub?: string
 }
 
 /** caps 能力位（protocol §3 / 决议 #166）：声明本节点能力，供对端探测；入站未知位忽略。 */
@@ -175,7 +189,9 @@ export const CAPS = {
    */
   fileCabinet: 'shr1',
   remoteView: 'rv1',
-  remoteShare: 'rvs1'
+  remoteShare: 'rvs1',
+  /** 按对端加密（enc1）：对用户内容/文件控制/屏幕控制等做 X25519+AES-256-GCM；发现层仍明文。 */
+  e2e: 'enc1'
 } as const
 
 /**
@@ -200,6 +216,18 @@ export function effectiveShareMode(
   return grant ?? defaultMode
 }
 
+/** 报文信封加密段（可选能力 enc1）：明文只保留路由字段，载荷以密文传送 */
+export interface EncField {
+  v: 1
+  eph: string
+  n: string
+  ct: string
+}
+
+export function isEncPub(value: unknown): value is string {
+  return typeof value === 'string' && value.length === LIMITS.encPub && /^[A-Za-z0-9+/]{43}=$/.test(value)
+}
+
 /** 报文信封（protocol §4） */
 export interface Envelope<T = unknown> {
   v: number
@@ -208,6 +236,8 @@ export interface Envelope<T = unknown> {
   from: string
   ts: number
   payload: T
+  /** 出现时表示 payload 已加密，线路上不得再带明文 payload */
+  enc?: EncField
 }
 
 /** entry / alive / profile 的载荷 */
@@ -558,6 +588,20 @@ export interface TcpMsgAckFrame {
   type: 'msg-ack'
   ackFor: string
 }
+/** TCP 按连接加密握手（双方临时 X25519 + 长期密钥认证） */
+export interface EncHelloFrame {
+  type: 'enc-hello'
+  v: 1
+  from: string
+  eph: string
+  n: string
+}
+export interface EncOkFrame {
+  type: 'enc-ok'
+  v: 1
+  eph: string
+  n: string
+}
 /** 桌面查看（protocol §8.3）：所有画面及授权只在内存，逐次同意。 */
 export const SCREEN_REQUEST_TIMEOUT_MS = 60_000
 export const SCREEN_CONNECT_TIMEOUT_MS = 15_000
@@ -608,6 +652,8 @@ export type TcpFrame =
   | WaitFrame
   | TcpMsgFrame
   | TcpMsgAckFrame
+  | EncHelloFrame
+  | EncOkFrame
 
 export const MSG_TYPES = {
   entry: 'entry',

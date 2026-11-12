@@ -24,7 +24,8 @@ export const SYSTEM_MESSAGE_TEMPLATES = {
   'group.announcement': '{actor}修改了群公告',
   'group.promoted': '{actor}将{members}设为管理员',
   'group.demoted': '{actor}取消了{members}的管理员身份',
-  'share.uploaded': '{actor} 上传了 {count} 个文件到你的文件柜'
+  'share.uploaded': '{actor} 上传了 {count} 个文件到你的文件柜',
+  'enc.key-changed': '{actor}的加密公钥已变更，请确认是否仍是同一台设备'
 } as const
 
 export type SystemMessageKey = keyof typeof SYSTEM_MESSAGE_TEMPLATES

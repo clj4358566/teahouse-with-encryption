@@ -1,7 +1,7 @@
 {
   "name": "pantry",
   "productName": "茶话间",
-  "version": "0.64.3",
+  "version": "0.65.0-encryption",
   "description": "茶话间（Teahouse）—— 纯内网、基于 IP 的局域网即时通讯与文件传输工具",
   "license": "GPL-3.0-only",
   "private": true,
@@ -96,7 +96,7 @@
         "AppImage"
       ],
       "category": "Network",
-      "artifactName": "Teahouse-${version}-${os}-${arch}.${ext}",
+      "artifactName": "Teahouse-0.65-encryption-${os}-${arch}.${ext}",
       "desktop": {
         "StartupWMClass": "teahouse",
         "Name": "茶话间"

@@ -15,6 +15,13 @@ import {
   type TcpFrame
 } from '../../shared/protocol'
 import { encodeFrame, FrameReader } from './frame'
+import {
+  acceptTcpServerEncryption,
+  feedTcpPlain,
+  startTcpClientEncryption,
+  type EncIdentity,
+  type TcpE2eContext
+} from './e2e'
 
 // 文件传输数据面（protocol §8，拉取式）：
 // 发送方被动开 TCP 服务，按 pull 帧供流（边读边算 SHA-256）；
@@ -36,6 +43,8 @@ export interface OutgoingLookup {
   openScreen?: (socket: Socket, frame: ScreenOpenFrame) => ((frame: TcpFrame) => void) | null
   /** 对端是否声明 tw1（决议 #211）：只有声明者才能收 wait 帧，旧端遇未知帧型会断链 */
   supportsWait?: (peerId: string) => boolean
+  /** 双方均支持 enc1 时，TCP 连接先做加密握手再走原有帧/裸流 */
+  e2e?: TcpE2eContext
 }
 
 export type ReadStreamFactory = (
@@ -267,6 +276,16 @@ export class TransferServer extends EventEmitter {
     const reader = new FrameReader(
       (frame) => {
         if (socket.destroyed) return
+        if (firstFrame && frame.type === 'enc-hello') {
+          firstFrame = false
+          if (reader.bufferedLength() > 0 || !this.lookup.e2e) {
+            reader.abort('enc-handshake')
+            socket.destroy()
+            return
+          }
+          acceptTcpServerEncryption(frame, socket, this.lookup.e2e)
+          return
+        }
         if (screenFrames) { screenFrames(frame); return }
         if (firstFrame && frame.type === 'screen-open') {
           firstFrame = false
@@ -411,7 +430,7 @@ export class TransferServer extends EventEmitter {
 
     socket.on('data', (chunk) => {
       try {
-        reader.feed(chunk)
+        for (const plain of feedTcpPlain(socket, chunk)) reader.feed(plain)
       } catch {
         socket.destroy()
       }
@@ -472,6 +491,8 @@ export interface PullOptions {
   openReadStream?: ReadStreamFactory
   /** 测试注入：默认写入真实文件系统；替身也须在底层句柄关闭后发出 close。 */
   openWriteStream?: WriteStreamFactory
+  /** 对端支持 enc1 时先握手再拉流 */
+  e2e?: { identity: EncIdentity; peerId: string; peerPub: Buffer }
 }
 
 function streamClosePromise(stream: ReturnType<ReadStreamFactory> | ReturnType<WriteStreamFactory>): Promise<void> {
@@ -667,7 +688,6 @@ export function pullTransfer(opts: PullOptions): Promise<void> {
         const previous = socket
         socket = new Socket()
         socketPaused = false
-        attachSocket(socket)
         previous.destroy()
       }
       try {
@@ -762,30 +782,45 @@ export function pullTransfer(opts: PullOptions): Promise<void> {
       )
       return reader
     }
-    const attachSocket = (connection: Socket): void => {
+    const watchSocket = (connection: Socket): void => {
       opts.cancelRef.socket = connection
       connection.setNoDelay(true)
-      const reader = createReader(connection)
-      connection.on('data', chunk => {
-        if (connection !== socket || !canContinue()) return
-        try { reader.feed(chunk) } catch (error) { fail('invalid-data', error) }
-      })
       connection.on('timeout', () => { if (connection === socket) fail('timeout') })
       connection.on('error', error => { if (connection === socket) fail('socket-error', error) })
       connection.on('close', () => { if (connection === socket) fail('closed') })
+    }
+    const attachSocket = (connection: Socket): void => {
+      const reader = createReader(connection)
+      connection.on('data', chunk => {
+        if (connection !== socket || !canContinue()) return
+        try {
+          for (const plain of feedTcpPlain(connection, chunk)) reader.feed(plain)
+        } catch (error) { fail('invalid-data', error) }
+      })
     }
     const connect = (ready: () => void): void => {
       if (!canContinue()) return
       phase('connect')
       socket.setTimeout(positiveLimit(opts.idleTimeoutMs, PULL_IDLE_TIMEOUT))
       const connection = socket
+      watchSocket(connection)
       connection.connect({ host: opts.host, port: opts.port }, () => {
         if (connection !== socket || !canContinue()) return
-        phase('connected')
-        ready()
+        const proceed = (): void => {
+          if (connection !== socket || !canContinue()) return
+          attachSocket(connection)
+          phase('connected')
+          ready()
+        }
+        if (opts.e2e) {
+          startTcpClientEncryption(connection, opts.e2e)
+            .then(() => proceed())
+            .catch((error) => fail('enc-handshake', error))
+          return
+        }
+        proceed()
       })
     }
-    attachSocket(socket)
     connect(next)
   })
 }

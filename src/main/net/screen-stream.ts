@@ -8,6 +8,7 @@ import {
 import type { ScreenMode } from '../../shared/remote-view'
 import { inspectImageMetadata } from '../../shared/image-metadata'
 import { encodeFrame, FrameReader } from './frame'
+import { feedTcpPlain, startTcpClientEncryption, type EncIdentity } from './e2e'
 
 /** 复用图片元数据检查；完整 JPEG 的解码结果还须由查看窗口确认。 */
 export function screenImageSize(bytes: Uint8Array): { width: number; height: number } | null {
@@ -161,6 +162,7 @@ export class ScreenReceiver {
     onReady: () => void
     onTarget: (fps: number) => void
     onEnd: (reason: ScreenEndReason) => void
+    e2e?: { identity: EncIdentity; peerId: string; peerPub: Buffer }
   }) {
     this.socket = createConnection({ host: opts.host, port: opts.port })
     this.socket.setNoDelay(true)
@@ -203,10 +205,27 @@ export class ScreenReceiver {
         this.schedule()
       }).catch(() => this.end('protocol-error'))
     }, () => this.end('protocol-error'))
+    const begin = (): void => {
+      if (this.stopped) return
+      this.socket.on('data', chunk => {
+        try {
+          for (const plain of feedTcpPlain(this.socket, chunk)) reader.feed(plain)
+        } catch {
+          this.end('protocol-error')
+        }
+      })
+      this.socket.write(encodeFrame({ type: 'screen-open', from: opts.selfId, sessionId: opts.sessionId, token: opts.token }))
+    }
     this.socket.on('connect', () => {
-      if (!this.stopped) this.socket.write(encodeFrame({ type: 'screen-open', from: opts.selfId, sessionId: opts.sessionId, token: opts.token }))
+      if (this.stopped) return
+      if (opts.e2e) {
+        startTcpClientEncryption(this.socket, opts.e2e)
+          .then(() => begin())
+          .catch(() => this.end('protocol-error'))
+        return
+      }
+      begin()
     })
-    this.socket.on('data', chunk => reader.feed(chunk))
     this.socket.once('error', () => this.end('disconnected'))
     this.socket.once('close', () => this.end('disconnected'))
   }

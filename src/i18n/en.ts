@@ -1060,6 +1060,7 @@ const english: Record<string, string> = {
   "{actor}将{members}设为管理员": "{actor} made {members} an admin",
   "{actor}取消了{members}的管理员身份": "{actor} removed the admin role from {members}",
   "{actor} 上传了 {count} 个文件到你的文件柜": "{actor} uploaded files to your cabinet: {count}",
+  "{actor}的加密公钥已变更，请确认是否仍是同一台设备": "{actor}'s encryption public key changed. Confirm this is still the same device.",
   "掷出 {0} 点": "Rolled {0}",
   "出了{0}": "Played {0}",
   "石头": "Rock",

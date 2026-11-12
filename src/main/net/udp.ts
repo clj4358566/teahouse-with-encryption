@@ -3,6 +3,7 @@ import { networkInterfaces } from 'node:os'
 import { EventEmitter } from 'node:events'
 import { UDP_MAX_PAYLOAD, type Envelope } from '../../shared/protocol'
 import { decode, encode } from './codec'
+import type { EncDecryptor } from './e2e'
 
 export interface UdpChannelOptions {
   port: number
@@ -12,6 +13,8 @@ export interface UdpChannelOptions {
   broadcastTargets?: string[]
   /** 每源 IP 限速（protocol §1 入站校验 + tech-design §9 防泛洪） */
   rate?: { perSecond: number; burst: number }
+  /** 入站 enc 信封解密；未提供时加密包按 bad-enc 丢弃 */
+  decrypt?: EncDecryptor
 }
 
 interface Bucket {
@@ -116,7 +119,7 @@ export class UdpChannel extends EventEmitter {
       this.emit('drop', 'rate-limit', rinfo)
       return
     }
-    const result = decode(buf)
+    const result = decode(buf, this.opts.decrypt)
     if (!result.ok) {
       this.emit('drop', result.reason, rinfo)
       return

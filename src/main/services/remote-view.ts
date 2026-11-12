@@ -9,6 +9,7 @@ import {
 } from '../../shared/protocol'
 import type { ScreenAvailability, ScreenMode, ScreenState, ScreenRequestResult } from '../../shared/remote-view'
 import { createScreenSender, ScreenReceiver, type ScreenSender } from '../net/screen-stream'
+import type { EncIdentity } from '../net/e2e'
 
 export interface ScreenPeer { ip: string; tcpPort: number; online: boolean; name: string; caps: string[] }
 export interface RemoteViewDeps {
@@ -18,6 +19,7 @@ export interface RemoteViewDeps {
   send: (id: string, payload: ScreenPayload, bestEffort: boolean, signal?: AbortSignal) => Promise<boolean>
   sample: (sessionId: string, seq: number) => Promise<Uint8Array>
   display: (sessionId: string, seq: number, bytes: Uint8Array, width: number, height: number) => Promise<void>
+  tcpE2e?: (peerId: string) => { identity: EncIdentity; peerId: string; peerPub: Buffer } | undefined
 }
 
 /** 单节点只持有一个会话；UI、协议和采集均由本服务的状态授权。 */
@@ -100,6 +102,7 @@ export class RemoteViewService extends EventEmitter {
     this.phase('connecting', SCREEN_CONNECT_TIMEOUT_MS)
     this.receiver = new ScreenReceiver({
       host: peer.ip, port: this.tcpPort, selfId: this.deps.selfId, sessionId, token: payload.token,
+      e2e: this.deps.tcpE2e?.(peerId),
       display: (seq, bytes, width, height) => this.deps.display(sessionId, seq, bytes, width, height),
       onReady: () => { if (this.matches(sessionId)) this.phase('active') },
       onTarget: fps => {

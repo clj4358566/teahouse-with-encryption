@@ -131,6 +131,20 @@ export class ChatService extends EventEmitter {
     this.emitConvs()
   }
 
+  /** 对端 encPub 相对已信任值发生变化（TOFU）：在私聊里留下可见提示，仍继续通信。 */
+  noteEncKeyChanged(peerId: string, actorName: string): void {
+    const convId = this.deps.convRepo.ensureSingle(peerId)
+    this.insertSystemTipWithParams(
+      `enc-key-${peerId}-${Date.now()}`,
+      convId,
+      peerId,
+      'enc.key-changed',
+      { actor: actorName },
+      Date.now(),
+      true
+    )
+  }
+
   setPinned(convId: string, pinned: boolean): void {
     this.deps.convRepo.setPinned(convId, pinned)
     this.emitConvs()
@@ -506,13 +520,25 @@ export class ChatService extends EventEmitter {
     ts: number,
     countUnread: boolean
   ): boolean {
+    return this.insertSystemTipWithParams(id, convId, senderId, content, {}, ts, countUnread)
+  }
+
+  private insertSystemTipWithParams(
+    id: string,
+    convId: string,
+    senderId: string,
+    content: SystemMessageKey,
+    params: Parameters<typeof systemMessage>[1],
+    ts: number,
+    countUnread: boolean
+  ): boolean {
     const inserted = this.deps.msgRepo.insert({
       id,
       convId,
       senderId,
       isMine: false,
       kind: 'system',
-      ...systemMessage(content),
+      ...systemMessage(content, params),
       ts,
       status: 'sent'
     })

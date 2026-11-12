@@ -886,3 +886,17 @@ it.each([MSG_TYPES.entry, MSG_TYPES.alive])('%s 校验可选探活关联标识�
     expect(decode(encode(makeEnvelope(type, 'node-aaaa', { profile: makeProfile(), probeId }))).ok).toBe(false)
   }
 })
+
+describe('codec enc1 / encPub', () => {
+  it('接受合法 encPub，拒绝非 32 字节公钥', () => {
+    const key = 'A'.repeat(43) + '='
+    expect(Buffer.from(key, 'base64').length).toBe(32)
+    const env = makeEnvelope<ProfilePayload>(MSG_TYPES.entry, 'node-aaaa', {
+      profile: makeProfile({ encPub: key, caps: ['enc1'] })
+    })
+    expect(decode(encode(env))).toMatchObject({ ok: true, known: true })
+    expect(decode(encode(makeEnvelope<ProfilePayload>(MSG_TYPES.entry, 'node-aaaa', {
+      profile: makeProfile({ encPub: 'not-a-key', caps: ['enc1'] })
+    })))).toEqual({ ok: false, reason: 'bad-payload:entry' })
+  })
+})

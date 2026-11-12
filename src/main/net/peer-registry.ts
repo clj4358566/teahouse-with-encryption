@@ -80,6 +80,11 @@ export class PeerRegistry extends EventEmitter {
       if (!isDeepStrictEqual(profile, existing.profile)) {
         changed = true
       }
+      const prevPub = existing.profile.encPub || ''
+      const nextPub = profile.encPub || ''
+      if (prevPub && nextPub && prevPub !== nextPub) {
+        this.emit('enc-key-changed', nodeId, prevPub, nextPub)
+      }
       if (newer) this.profileConfirmationOnly.delete(nodeId)
       if (confirmed && sameRevision && profileTs !== undefined && profileTs <= (this.profileTimes.get(nodeId) ?? -Infinity)) {
         // 发送端时钟回拨后，同版本仅接受关联应答，防旧时钟报文再次覆盖。

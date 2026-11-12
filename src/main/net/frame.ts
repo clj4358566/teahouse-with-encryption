@@ -1,5 +1,6 @@
-import { LIMITS, isScreenSessionId, isScreenToken, isScreenSize, SCREEN_MAX_FRAME_BYTES, type TcpFrame } from '../../shared/protocol'
+import { LIMITS, isScreenSessionId, isScreenToken, isScreenSize, SCREEN_MAX_FRAME_BYTES, isEncPub, type TcpFrame } from '../../shared/protocol'
 import { decodeTcpEnvelopeObject } from './codec'
+import type { EncDecryptor } from './e2e'
 
 // TCP 帧编解码（protocol §8）：4 字节大端长度前缀 + UTF-8 JSON 控制帧；
 // pull-ok 之后切换 raw 模式直收 len 字节裸流（零拷贝直传，不做 base64）。
@@ -25,8 +26,15 @@ function isNonNegativeSafeInteger(value: unknown): value is number {
   return Number.isSafeInteger(value) && (value as number) >= 0
 }
 
+function isHandshakeNonce(value: unknown): value is string {
+  if (typeof value !== 'string' || value.length === 0 || value.length % 4 !== 0) return false
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(value)) return false
+  const padding = value.endsWith('==') ? 2 : value.endsWith('=') ? 1 : 0
+  return Buffer.from(value, 'base64').length === 16 && Buffer.from(value, 'base64').length === (value.length / 4) * 3 - padding
+}
+
 /** TCP 控制帧逐类型白名单校验；所有网络输入先经此处再进入服务层。 */
-export function decodeTcpFrameObject(raw: unknown): TcpFrame | null {
+export function decodeTcpFrameObject(raw: unknown, decryptor?: EncDecryptor): TcpFrame | null {
   if (!isRecord(raw) || typeof raw.type !== 'string') return null
 
   switch (raw.type) {
@@ -74,9 +82,17 @@ export function decodeTcpFrameObject(raw: unknown): TcpFrame | null {
     case 'wait':
       if (!hasOnlyKeys(raw, ['type'])) return null
       return raw as unknown as TcpFrame
+    case 'enc-hello':
+      if (!hasOnlyKeys(raw, ['type', 'v', 'from', 'eph', 'n'])) return null
+      if (raw.v !== 1 || !isBoundedString(raw.from, LIMITS.from) || !isEncPub(raw.eph) || !isHandshakeNonce(raw.n)) return null
+      return raw as unknown as TcpFrame
+    case 'enc-ok':
+      if (!hasOnlyKeys(raw, ['type', 'v', 'eph', 'n'])) return null
+      if (raw.v !== 1 || !isEncPub(raw.eph) || !isHandshakeNonce(raw.n)) return null
+      return raw as unknown as TcpFrame
     case 'msg': {
       if (!hasOnlyKeys(raw, ['type', 'envelope'])) return null
-      const decoded = decodeTcpEnvelopeObject(raw.envelope)
+      const decoded = decodeTcpEnvelopeObject(raw.envelope, decryptor)
       if (!decoded.ok || !decoded.known) return null
       return { type: 'msg', envelope: decoded.env }
     }
@@ -108,8 +124,17 @@ export class FrameReader {
   constructor(
     private readonly onFrame: (frame: TcpFrame) => void,
     private readonly onRaw: (chunk: Buffer) => void,
-    private readonly onError: (reason: string) => void
+    private readonly onError: (reason: string) => void,
+    private readonly decryptor?: EncDecryptor
   ) {}
+
+  bufferedLength(): number {
+    return this.buf.length
+  }
+
+  abort(reason = 'bad-frame-shape'): void {
+    this.fail(reason)
+  }
 
   expectRaw(bytes: number): void {
     if (this.failed) return
@@ -162,7 +187,7 @@ export class FrameReader {
         this.fail('bad-frame-json')
         return
       }
-      const frame = decodeTcpFrameObject(raw)
+      const frame = decodeTcpFrameObject(raw, this.decryptor)
       if (!frame) {
         this.fail('bad-frame-shape')
         return
